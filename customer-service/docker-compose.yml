@@ -1,0 +1,12 @@
+services:
+  customer-service:
+    build: .
+    ports:
+      - "8081:8081"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://host.docker.internal:5432/customerdb
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_APPLICATION_NAME: customer-service
+      SERVER_PORT: 8081
+    restart: unless-stopped

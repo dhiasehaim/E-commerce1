@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  # Microservices
+  order-service:
+    build: ./order-service
+    ports: ["8083:8083"]
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://host.docker.internal:5432/orderdb
+      - SPRING_RABBITMQ_HOST=rabbitmq
+    depends_on:
+      - rabbitmq
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  customer-service:
+    build: ./customer-service
+    ports: ["8081:8081"]
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://host.docker.internal:5432/customerdb
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  inventory-service:
+    build: ./inventory-service
+    ports: ["8082:8082"]
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://host.docker.internal:5432/inventorydb
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  payment-service:
+    build: ./payment-service
+    ports: ["8084:8084"]
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://host.docker.internal:5432/paymentdb
+      - SPRING_RABBITMQ_HOST=rabbitmq
+    depends_on:
+      - rabbitmq
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  shipping-service:
+    build: ./shipping-service
+    ports: ["8085:8085"]
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://host.docker.internal:5432/shippingdb
+      - SPRING_RABBITMQ_HOST=rabbitmq
+    depends_on:
+      - rabbitmq
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  notification-service:
+    build: ./notification-service
+    ports: ["8086:8086"]
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://host.docker.internal:5432/notificationdb
+      - SPRING_RABBITMQ_HOST=rabbitmq
+    depends_on:
+      - rabbitmq
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Message Broker
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"   # AMQP protocol
+      - "15672:15672" # Management UI
+    environment:
+      - RABBITMQ_DEFAULT_USER=admin
+      - RABBITMQ_DEFAULT_PASS=password
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
