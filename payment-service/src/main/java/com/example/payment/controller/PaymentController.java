@@ -3,6 +3,9 @@ package com.example.payment.controller;
 import com.example.payment.model.PaymentRequest;
 import com.example.payment.model.PaymentResponse;
 import com.example.payment.service.PaymentService;
+
+import java.util.List;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -19,7 +22,11 @@ public class PaymentController {
         PaymentResponse response = paymentService.processPayment(request);
         return ResponseEntity.ok(response);
     }
-    
+    @GetMapping("/all")
+    public ResponseEntity<List<PaymentResponse>> getAllPayments() {
+        List<PaymentResponse> payments = paymentService.getAllPayments();
+        return ResponseEntity.ok(payments);
+    }
     @GetMapping("/{id}")
     public ResponseEntity<PaymentResponse> getPayment(@PathVariable String id) {
         PaymentResponse response = paymentService.getPayment(id);

@@ -4,6 +4,10 @@ import com.example.payment.model.Payment;
 import com.example.payment.model.PaymentRequest;
 import com.example.payment.model.PaymentResponse;
 import com.example.payment.repository.PaymentRepository;
+
+import java.util.List;
+import java.util.stream.Collectors;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -25,7 +29,12 @@ public class PaymentService {
         Payment savedPayment = paymentRepository.save(payment);
         return PaymentResponse.fromEntity(savedPayment);
     }
-    
+    public List<PaymentResponse> getAllPayments() {
+        List<Payment> payments = paymentRepository.findAll();
+        return payments.stream()
+            .map(PaymentResponse::fromEntity)
+            .collect(Collectors.toList());
+    }
     public PaymentResponse getPayment(String id) {
         Payment payment = paymentRepository.findById(id)
             .orElseThrow(() -> new RuntimeException("Payment not found with id: " + id));

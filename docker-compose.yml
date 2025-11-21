@@ -1,7 +1,20 @@
 version: '3.8'
 
 services:
-  # Microservices
+  postgres-auth:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: authdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_auth_data:/var/lib/postgresql/data
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
   order-service:
     build: ./order-service
     ports: ["8083:8083"]
@@ -67,13 +80,11 @@ services:
       - rabbitmq
     extra_hosts:
       - "host.docker.internal:host-gateway"
-
-  # Message Broker
   rabbitmq:
     image: rabbitmq:3-management
     ports:
-      - "5672:5672"   # AMQP protocol
-      - "15672:15672" # Management UI
+      - "5672:5672" 
+      - "15672:15672" 
     environment:
       - RABBITMQ_DEFAULT_USER=admin
       - RABBITMQ_DEFAULT_PASS=password
@@ -82,3 +93,27 @@ services:
       interval: 30s
       timeout: 30s
       retries: 3
+  nginx-gateway:
+    build: ./nginx
+    ports:
+      - "8080:80"
+    depends_on:
+      - auth-service 
+      - customer-service
+      - order-service
+      - inventory-service
+      - payment-service
+      - shipping-service
+      - notification-service
+  auth-service:
+    build: ./auth-service
+    ports: ["8087:8087"]
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://host.docker.internal:5432/authdb
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - postgres-auth    
+volumes:
+  postgres_auth_data:

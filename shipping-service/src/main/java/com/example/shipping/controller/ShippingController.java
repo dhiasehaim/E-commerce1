@@ -7,12 +7,21 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;  // ADD THIS IMPORT
+
 @RestController
 @RequestMapping("/api/shipping")
 public class ShippingController {
     
     @Autowired
     private ShippingService shippingService;
+    
+    // ADD THIS - Get all shippings
+    @GetMapping("/all")
+    public ResponseEntity<List<ShippingResponse>> getAllShippings() {
+        List<ShippingResponse> shippings = shippingService.getAllShippings();
+        return ResponseEntity.ok(shippings);
+    }
     
     @PostMapping
     public ResponseEntity<ShippingResponse> createShipping(@RequestBody ShippingRequest request) {

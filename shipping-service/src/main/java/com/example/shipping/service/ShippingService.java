@@ -7,6 +7,9 @@ import com.example.shipping.repository.ShippingRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.util.List;  // ADD THIS IMPORT
+import java.util.stream.Collectors;  // ADD THIS IMPORT
+
 @Service
 public class ShippingService {
     
@@ -24,6 +27,14 @@ public class ShippingService {
         
         Shipping savedShipping = shippingRepository.save(shipping);
         return ShippingResponse.fromEntity(savedShipping);
+    }
+    
+    // ADD THIS - Get all shippings
+    public List<ShippingResponse> getAllShippings() {
+        List<Shipping> shippings = shippingRepository.findAll();
+        return shippings.stream()
+            .map(ShippingResponse::fromEntity)
+            .collect(Collectors.toList());
     }
     
     public ShippingResponse getShippingByOrderId(String orderId) {
