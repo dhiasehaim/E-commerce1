@@ -8,6 +8,7 @@ import com.example.auth.repository.UserRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
 import java.util.stream.Collectors;
 
 @Service
@@ -46,5 +47,15 @@ public class AuthService {
     
     public String getUsernameFromToken(String token) {
         return jwtService.extractUsername(token);
+    }
+    
+    // ADD THESE MISSING METHODS:
+    
+    public List<String> extractRoles(String token) {
+        return jwtService.extractRoles(token);
+    }
+    
+    public Long extractCustomerId(String token) {
+        return jwtService.extractCustomerId(token);
     }
 }

@@ -15,5 +15,6 @@ public class Order {
     private double price;
     private String paymentMethod;     
     private String paymentStatus;    
-    private String paymentId;         
+    private String paymentId;       
+    private Long customerId;  
 }

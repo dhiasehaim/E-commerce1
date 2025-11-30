@@ -1,26 +1,31 @@
 package com.example.auth.model;
 
-import lombok.Data;
-
-@Data
 public class LoginRequest {
     private String username;
     private String password;
-    private String email;  // For registration
-    private Long customerId; // For customer registration
+    private String email;
+    private Long customerId;
     
-    // Constructors
-    public LoginRequest() {}
-    
-    public LoginRequest(String username, String password) {
-        this.username = username;
-        this.password = password;
+    // Add getters and setters for new fields
+    public String getEmail() {
+        return email;
     }
     
-    public LoginRequest(String username, String password, String email, Long customerId) {
-        this.username = username;
-        this.password = password;
+    public void setEmail(String email) {
         this.email = email;
+    }
+    
+    public Long getCustomerId() {
+        return customerId;
+    }
+    
+    public void setCustomerId(Long customerId) {
         this.customerId = customerId;
     }
+    
+    // Existing getters/setters
+    public String getUsername() { return username; }
+    public void setUsername(String username) { this.username = username; }
+    public String getPassword() { return password; }
+    public void setPassword(String password) { this.password = password; }
 }
