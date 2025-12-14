@@ -10,7 +10,6 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class RabbitMQConfig {
 
-    // Order Exchange and Queue (for listening to order events)
     @Bean
     public DirectExchange orderExchange() {
         return new DirectExchange("order.exchange");

@@ -9,6 +9,10 @@ import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import io.github.resilience4j.retry.Retry;
 import io.github.resilience4j.retry.RetryRegistry;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
@@ -27,7 +31,8 @@ import java.util.function.Supplier;
 
 @Service
 public class OrderService {
-
+    private static final Logger logger = LoggerFactory.getLogger(OrderService.class);
+    
     @Autowired
     private OrderRepository orderRepository;
 
@@ -43,39 +48,61 @@ public class OrderService {
     @Autowired
     private RetryRegistry retryRegistry;
 
+    @Autowired
+    private Counter ordersCreatedCounter;
+
+    @Autowired
+    private Counter ordersFailedCounter;
+
+    @Autowired
+    private Counter paymentStatusCounter;
+
     private final RestTemplate restTemplate = new RestTemplate();
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public Order createOrder(Order order) {
-        System.out.println("=== ORDER SERVICE: STARTING ORDER CREATION ===");
+        logger.info("=== STARTING ORDER CREATION ===");
 
         // 🔐 EXTRACT CUSTOMER ID FROM JWT TOKEN
         Long customerId = extractCustomerIdFromToken();
         if (customerId == null) {
+            logger.error("Unauthorized: Cannot identify customer from token");
             throw new RuntimeException("Unauthorized: Cannot identify customer from token");
         }
 
         // Set customer ID from token (NOT from request body)
         order.setCustomerId(customerId);
-        System.out.println(" Order being created for customer: " + customerId);
+        logger.info("Order being created for customer: {}", customerId);
 
         // Set initial status
         order.setPaymentStatus("PENDING");
-        Order savedOrder = orderRepository.save(order);
-        System.out.println(" Order saved with ID: " + savedOrder.getId() + " for customer: " + customerId);
+        
+        try {
+            Order savedOrder = orderRepository.save(order);
+            ordersCreatedCounter.increment();
+            
+            logger.info("Order saved successfully: ID={}, Product={}, Customer={}", 
+                       savedOrder.getId(), savedOrder.getProductName(), savedOrder.getCustomerId());
 
-        // If payment method provided, call Payment Service with resilience patterns
-        if (savedOrder.getPaymentMethod() != null && !savedOrder.getPaymentMethod().isEmpty()) {
-            callPaymentServiceWithResilience(savedOrder);
+            // If payment method provided, call Payment Service with resilience patterns
+            if (savedOrder.getPaymentMethod() != null && !savedOrder.getPaymentMethod().isEmpty()) {
+                callPaymentServiceWithResilience(savedOrder);
+            }
+
+            return savedOrder;
+            
+        } catch (Exception e) {
+            logger.error("Failed to create order: {}", e.getMessage(), e);
+            ordersFailedCounter.increment();
+            throw e;
         }
-
-        return savedOrder;
     }
 
     private Boolean callPaymentServiceWithWebClient(Order order) {
+        logger.info("Calling payment service for order ID={}, Amount={}", 
+                   order.getId(), order.getPrice() * order.getQuantity());
+        
         try {
-            System.out.println("=== CALLING PAYMENT SERVICE (WITH WEBCLIENT + TIMEOUT + FALLBACK) ===");
-
             // Create payment request
             PaymentRequestDto paymentRequest = new PaymentRequestDto(
                     order.getId().toString(),
@@ -85,91 +112,78 @@ public class OrderService {
             // Get the current Authorization header
             String authHeader = getCurrentAuthorizationHeader();
 
-            // Call payment service with WebClient (has 5s timeout + fallback built in)
+            // Call payment service with WebClient
             PaymentResponseDto paymentResponse = paymentClient.processPayment(paymentRequest, authHeader)
-                    .block(); // Block for synchronous operation
+                    .block();
 
-            System.out.println(" PAYMENT RESPONSE RECEIVED:");
-            System.out.println("   - Status: " + paymentResponse.getStatus());
-            System.out.println("   - Payment ID: " + paymentResponse.getPaymentId());
+            logger.info("Payment response received - Status: {}, Payment ID: {}", 
+                       paymentResponse.getStatus(), paymentResponse.getPaymentId());
 
             // STEP 4: FALLBACK STRATEGY - Check if this is a fallback response
             if ("PENDING_PAYMENT".equals(paymentResponse.getStatus()) ||
                     paymentResponse.getPaymentId().startsWith("FALLBACK-")) {
-                System.out.println(" FALLBACK: Payment service unavailable, order will be queued");
+                logger.warn("FALLBACK: Payment service unavailable, order queued - Order ID: {}", 
+                           order.getId());
                 order.setPaymentStatus("PENDING_PAYMENT");
                 order.setPaymentId(paymentResponse.getPaymentId());
                 orderRepository.save(order);
-                return false; // Indicate fallback was used
+                paymentStatusCounter.increment(); // Track fallback usage
+                return false;
             }
 
             // Normal successful payment
             order.setPaymentStatus(paymentResponse.getStatus());
             order.setPaymentId(paymentResponse.getPaymentId());
             orderRepository.save(order);
-
-            System.out.println("Order updated with payment status: " + paymentResponse.getStatus());
+            
+            logger.info("Payment successful for order ID={}, Status: {}", 
+                       order.getId(), paymentResponse.getStatus());
             return true;
 
         } catch (Exception e) {
-            System.err.println("WebClient payment call failed: " + e.getMessage());
+            logger.error("WebClient payment call failed for order ID={}: {}", 
+                        order.getId(), e.getMessage(), e);
             throw new RuntimeException("Payment service call failed", e);
         }
     }
 
-    // 🔐 NEW METHOD: Extract customerId from JWT token
+    // 🔐 Extract customerId from JWT token
     private Long extractCustomerIdFromToken() {
         try {
             ServletRequestAttributes attributes = (ServletRequestAttributes) RequestContextHolder
                     .getRequestAttributes();
             if (attributes != null) {
-                // 🔍 DEBUG: Log all headers to see what's being received
-                System.out.println("=== DEBUG: CHECKING HEADERS IN ORDER SERVICE ===");
-                java.util.Enumeration<String> headerNames = attributes.getRequest().getHeaderNames();
-                boolean foundAuthHeader = false;
-                while (headerNames.hasMoreElements()) {
-                    String headerName = headerNames.nextElement();
-                    String headerValue = attributes.getRequest().getHeader(headerName);
-                    System.out.println("HEADER: " + headerName + " = " + headerValue);
-                    if ("Authorization".equalsIgnoreCase(headerName)) {
-                        foundAuthHeader = true;
-                    }
-                }
-                System.out.println("Found Authorization header: " + foundAuthHeader);
-                System.out.println("=== END DEBUG ===");
-
+                logger.debug("Extracting customer ID from token...");
+                
                 // Try to get from X-Customer-ID header (if NGINX passes it)
                 String customerIdHeader = attributes.getRequest().getHeader("X-Customer-ID");
                 if (customerIdHeader != null && !customerIdHeader.isEmpty()) {
-                    System.out.println("🔐 Extracted customerId from header: " + customerIdHeader);
+                    logger.debug("Extracted customerId from X-Customer-ID header: {}", customerIdHeader);
                     return Long.parseLong(customerIdHeader);
                 }
 
                 // Fallback: Extract from JWT token directly
                 String authHeader = getCurrentAuthorizationHeader();
-                System.out.println("Auth header from getCurrentAuthorizationHeader(): " + authHeader);
                 if (authHeader != null && authHeader.startsWith("Bearer ")) {
                     String token = authHeader.substring(7);
-                    System.out.println("Token length: " + token.length());
                     Long customerId = extractCustomerIdFromJWT(token);
                     if (customerId != null) {
-                        System.out.println("🔐 Extracted customerId from JWT: " + customerId);
+                        logger.debug("Extracted customerId from JWT: {}", customerId);
                         return customerId;
                     } else {
-                        System.err.println(" Could not extract customerId from JWT token");
+                        logger.warn("Could not extract customerId from JWT token");
                     }
                 } else {
-                    System.err.println(" No valid Authorization header found");
+                    logger.warn("No valid Authorization header found");
                 }
             } else {
-                System.err.println(" ServletRequestAttributes is null - no request context");
+                logger.warn("ServletRequestAttributes is null - no request context");
             }
         } catch (Exception e) {
-            System.err.println(" Could not extract customerId from token: " + e.getMessage());
-            e.printStackTrace();
+            logger.error("Could not extract customerId from token: {}", e.getMessage(), e);
         }
 
-        System.err.println(" No customerId found in token or headers");
+        logger.error("No customerId found in token or headers");
         return null;
     }
 
@@ -181,21 +195,16 @@ public class OrderService {
                 String payload = new String(Base64.getUrlDecoder().decode(parts[1]));
                 JsonNode jsonNode = objectMapper.readTree(payload);
 
-                System.out.println("=== JWT PAYLOAD DEBUG ===");
-                System.out.println("Full JWT Payload: " + payload);
-                System.out.println("Has customerId: " + jsonNode.has("customerId"));
-                if (jsonNode.has("customerId")) {
-                    System.out.println("customerId value: " + jsonNode.get("customerId"));
-                }
-                System.out.println("=== END JWT DEBUG ===");
-
+                logger.debug("JWT payload extracted, checking for customerId...");
+                
                 if (jsonNode.has("customerId") && !jsonNode.get("customerId").isNull()) {
-                    return jsonNode.get("customerId").asLong();
+                    Long customerId = jsonNode.get("customerId").asLong();
+                    logger.debug("Found customerId in JWT: {}", customerId);
+                    return customerId;
                 }
             }
         } catch (Exception e) {
-            System.err.println(" Error parsing JWT: " + e.getMessage());
-            e.printStackTrace();
+            logger.error("Error parsing JWT: {}", e.getMessage(), e);
         }
         return null;
     }
@@ -213,7 +222,7 @@ public class OrderService {
                 }
             }
         } catch (Exception e) {
-            System.err.println(" Could not extract roles from token: " + e.getMessage());
+            logger.warn("Could not extract roles from token: {}", e.getMessage());
         }
         return null;
     }
@@ -227,56 +236,59 @@ public class OrderService {
                 JsonNode jsonNode = objectMapper.readTree(payload);
 
                 if (jsonNode.has("roles")) {
+                    logger.debug("Found roles in JWT token");
                     return objectMapper.convertValue(
                             jsonNode.get("roles"),
                             objectMapper.getTypeFactory().constructCollectionType(List.class, String.class));
                 }
             }
         } catch (Exception e) {
-            System.err.println(" Error extracting roles from JWT: " + e.getMessage());
+            logger.error("Error extracting roles from JWT: {}", e.getMessage());
         }
         return null;
     }
 
     // Helper method to check for admin role with multiple possible names
     private boolean hasAdminRole(List<String> roles) {
-        return roles.stream().anyMatch(role -> role.equals("ROLE_ADMIN") ||
+        if (roles == null) return false;
+        
+        boolean isAdmin = roles.stream().anyMatch(role -> role.equals("ROLE_ADMIN") ||
                 role.equals("ADMIN") ||
                 role.equals("ROLE_ADMINISTRATOR") ||
                 role.equals("ADMINISTRATOR"));
+        
+        logger.debug("User has admin role: {}", isAdmin);
+        return isAdmin;
     }
 
     private void callPaymentServiceWithResilience(Order order) {
-
+        logger.info("Calling payment service with resilience patterns for order ID={}", order.getId());
+        
         CircuitBreaker circuitBreaker = circuitBreakerRegistry.circuitBreaker("paymentService");
-
         Retry retry = retryRegistry.retry("paymentService");
-
 
         Supplier<Boolean> resilientPaymentCall = Retry.decorateSupplier(
                 retry,
                 CircuitBreaker.decorateSupplier(
                         circuitBreaker,
-                        () -> callPaymentServiceWithWebClient(order))); // CHANGED: Use WebClient version
+                        () -> callPaymentServiceWithWebClient(order)));
 
         try {
             Boolean success = resilientPaymentCall.get();
             if (!success) {
-
-                System.out.println(" FALLBACK: Payment queued for later processing via fallback");
-
+                logger.warn("Payment queued for later processing via fallback - Order ID: {}", order.getId());
             }
         } catch (Exception e) {
-            System.err.println(" All resilience mechanisms failed: " + e.getMessage());
-
+            logger.error("All resilience mechanisms failed for order ID={}: {}", 
+                        order.getId(), e.getMessage());
             queuePaymentForLater(order);
         }
     }
 
     private Boolean callPaymentServiceDirect(Order order) {
         try {
-            System.out.println("=== CALLING PAYMENT SERVICE (WITH RESILIENCE) ===");
-
+            logger.info("Calling payment service directly for order ID={}", order.getId());
+            
             String paymentUrl = "http://payment-service:8084/api/payments";
 
             Map<String, Object> paymentRequest = new HashMap<>();
@@ -284,14 +296,9 @@ public class OrderService {
             paymentRequest.put("amount", order.getPrice() * order.getQuantity());
             paymentRequest.put("paymentMethod", order.getPaymentMethod());
 
-            System.out.println(" Sending to payment service:");
-            System.out.println("   - URL: " + paymentUrl);
-            System.out.println("   - Order ID: " + paymentRequest.get("orderId"));
-
+            logger.debug("Payment request - URL: {}, Order ID: {}", paymentUrl, paymentRequest.get("orderId"));
 
             String authHeader = getCurrentAuthorizationHeader();
-            System.out.println("   - Auth Header: " + (authHeader != null ? "Present" : "Missing"));
-
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
             if (authHeader != null) {
@@ -304,41 +311,37 @@ public class OrderService {
 
             Map<String, Object> paymentResponse = responseEntity.getBody();
 
-            System.out.println(" PAYMENT RESPONSE RECEIVED:");
-            System.out.println("   - Full Response: " + paymentResponse);
             if (paymentResponse != null && paymentResponse.get("status") != null) {
                 String status = (String) paymentResponse.get("status");
                 String paymentId = (String) paymentResponse.get("paymentId");
 
-                System.out.println("   - Payment Status: " + status);
-                System.out.println("   - Payment ID: " + paymentId);
-
+                logger.info("Payment successful - Status: {}, Payment ID: {}", status, paymentId);
+                
                 order.setPaymentStatus(status);
                 order.setPaymentId(paymentId);
                 orderRepository.save(order);
-
-                System.out.println(" Order updated with payment status: " + status);
                 return true;
             } else {
-                System.err.println(" Payment response is null or missing status");
+                logger.error("Payment response is null or missing status for order ID={}", order.getId());
                 order.setPaymentStatus("FAILED");
                 orderRepository.save(order);
                 return false;
             }
 
         } catch (Exception e) {
-            System.err.println(" Payment service call failed: " + e.getMessage());
+            logger.error("Payment service call failed for order ID={}: {}", 
+                        order.getId(), e.getMessage(), e);
             throw new RuntimeException("Payment service call failed", e);
         }
     }
 
     private void queuePaymentForLater(Order order) {
-        System.out.println(" FALLBACK: Queuing payment for order " + order.getId() + " for later processing");
-
+        logger.warn("Queuing payment for later processing - Order ID: {}", order.getId());
+        
         order.setPaymentStatus("PENDING_PAYMENT");
         orderRepository.save(order);
 
-        System.out.println(" Payment queued for later processing, order status: PENDING_PAYMENT");
+        logger.info("Payment queued for order ID={}, status: PENDING_PAYMENT", order.getId());
     }
 
     private String getCurrentAuthorizationHeader() {
@@ -346,10 +349,12 @@ public class OrderService {
             ServletRequestAttributes attributes = (ServletRequestAttributes) RequestContextHolder
                     .getRequestAttributes();
             if (attributes != null) {
-                return attributes.getRequest().getHeader("Authorization");
+                String authHeader = attributes.getRequest().getHeader("Authorization");
+                logger.debug("Authorization header present: {}", authHeader != null);
+                return authHeader;
             }
         } catch (Exception e) {
-            System.err.println(" Could not get Authorization header: " + e.getMessage());
+            logger.error("Could not get Authorization header: {}", e.getMessage());
         }
         return null;
     }
@@ -358,15 +363,17 @@ public class OrderService {
         Long customerId = extractCustomerIdFromToken();
         List<String> roles = extractRolesFromToken();
 
-        System.out.println(" User roles: " + roles + ", customerId: " + customerId);
+        logger.info("Getting orders - Roles: {}, Customer ID: {}", roles, customerId);
+        
         if (roles != null && hasAdminRole(roles)) {
-            System.out.println(" ADMIN user - returning ALL orders");
+            logger.info("Admin user - returning ALL orders");
             return orderRepository.findAll();
         }
         if (customerId != null) {
-            System.out.println(" CUSTOMER user - returning only customer's orders");
+            logger.info("Customer user - returning orders for customer ID: {}", customerId);
             return orderRepository.findByCustomerId(customerId);
         }
+        logger.error("Unauthorized: Cannot identify user from token");
         throw new RuntimeException("Unauthorized: Cannot identify user from token");
     }
 
@@ -374,24 +381,43 @@ public class OrderService {
         Long customerId = extractCustomerIdFromToken();
         List<String> roles = extractRolesFromToken();
 
-        System.out.println(" User roles: " + roles + ", customerId: " + customerId);
+        logger.info("Getting order ID={} - Roles: {}, Customer ID: {}", id, roles, customerId);
+        
         if (roles != null && hasAdminRole(roles)) {
-            System.out.println(" ADMIN user - accessing any order");
+            logger.info("Admin user - accessing any order");
             return orderRepository.findById(id).orElse(null);
         }
         if (customerId != null) {
-            System.out.println(" CUSTOMER user - accessing only customer's order");
+            logger.info("Customer user - accessing only customer's order");
             return orderRepository.findByIdAndCustomerId(id, customerId).orElse(null);
         }
+        logger.error("Unauthorized: Cannot identify user from token");
         throw new RuntimeException("Unauthorized: Cannot identify user from token");
     }
 
     public Order updateOrder(Long id, Order order) {
+        logger.info("Updating order ID={}", id);
         order.setId(id);
-        return orderRepository.save(order);
+        
+        try {
+            Order updatedOrder = orderRepository.save(order);
+            logger.info("Order updated successfully: ID={}", id);
+            return updatedOrder;
+        } catch (Exception e) {
+            logger.error("Failed to update order ID={}: {}", id, e.getMessage(), e);
+            throw e;
+        }
     }
 
     public void deleteOrder(Long id) {
-        orderRepository.deleteById(id);
+        logger.info("Deleting order ID={}", id);
+        
+        try {
+            orderRepository.deleteById(id);
+            logger.info("Order deleted successfully: ID={}", id);
+        } catch (Exception e) {
+            logger.error("Failed to delete order ID={}: {}", id, e.getMessage(), e);
+            throw e;
+        }
     }
 }
